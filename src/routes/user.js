@@ -1,56 +1,48 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 import { supabase } from "../config/supabase.js";
+import { authenticateToken } from "../middleware/auth.js";
 
 const router = Router();
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
+
 router.post('/register', async (req, res) => {
-    const { email, nickname, password, startDeckCode } = req.body;
+    const rawEmail = req.body.email;
+    const rawUsername = req.body.username;
+    const password = req.body.password;
+    const startDeckCode = req.body.startDeckCode;
 
-    if (!email || !nickname || !password || !startDeckCode) {
+    if (!rawEmail || !rawUsername || !password || startDeckCode == null) {
         return res.status(400).json({
             success: false,
-            error: 'Email, nickname, password and startDeckCode are required.'
-        });
-    }
-
-    if (password.length < 6) {
-        return res.status(400).json({
-            success: false,
-            error: 'Password must be at least 6 characters long.'
+            error: 'Email, username, password and startDeckCode are required.'
         });
     }
 
-    if (password.length > 100) {
-        return res.status(400).json({
-            success: false,
-            error: 'Password must be at most 100 characters long.'
-        });
+    const email = String(rawEmail).trim().toLowerCase();
+    const username = String(rawUsername).trim();
+    const deckNum = parseInt(startDeckCode, 10);
+
+    if (!EMAIL_REGEX.test(email) || email.length > 255) {
+        return res.status(400).json({ success: false, error: 'Invalid email address.' });
     }
 
-    if (nickname.length < 3) {
-        return res.status(400).json({
-            success: false,
-            error: 'Nickname must be at least 3 characters long.'
-        });
+    if (username.length < 3 || username.length > 30) {
+        return res.status(400).json({ success: false, error: 'Username must be between 3 and 30 characters.' });
     }
-    if (nickname.length > 30) {
-        return res.status(400).json({
-            success: false,
-            error: 'Nickname must be at most 30 characters long.'
-        });
+    if (!USERNAME_REGEX.test(username)) {
+        return res.status(400).json({ success: false, error: 'Username may only contain letters, numbers and underscores.' });
     }
-    if (email.length > 255) {
-        return res.status(400).json({
-            success: false,
-            error: 'Email must be long.'
-        });
+
+    if (password.length < 6 || password.length > 100) {
+        return res.status(400).json({ success: false, error: 'Password must be between 6 and 100 characters.' });
     }
-    if (startDeckCode.length > 3) {
-        return res.status(400).json({
-            success: false,
-            error: 'Start deck code must be long.'
-        });
+
+    if (isNaN(deckNum) || deckNum < 1) {
+        return res.status(400).json({ success: false, error: 'Invalid start deck code.' });
     }
 
 
@@ -58,7 +50,7 @@ router.post('/register', async (req, res) => {
         const { data: startDeck, error: startDeckError } = await supabase
             .from('starter_decks')
             .select('*')
-            .eq('display_order', parseInt(startDeckCode))
+            .eq('display_order', deckNum)
             .single();
 
         if (startDeckError || !startDeck) {
@@ -74,17 +66,17 @@ router.post('/register', async (req, res) => {
             .from('users')
             .insert({
                 email,
-                nickname,
-                password_user: passwordHash
+                username,
+                password_hash: passwordHash
             })
             .select()
             .single();
 
         if (userError) {
             if (userError.code === '23505') {
-                return res.status(400).json({
+                return res.status(409).json({
                     success: false,
-                    error: 'Email or nickname already exists.'
+                    error: 'Email or username already in use.'
                 });
             }
             throw userError;
@@ -102,7 +94,25 @@ router.post('/register', async (req, res) => {
             .single();
 
         if (deckError) {
+            await supabase.from('users').delete().eq('id', user.id);
             throw deckError;
+        }
+
+        const { data: noviceTitle } = await supabase
+            .from('titles')
+            .select('id')
+            .eq('code', 'novice_player')
+            .single();
+
+        if (noviceTitle) {
+            await supabase.from('user_titles').insert({
+                user_id: user.id,
+                title_id: noviceTitle.id,
+            });
+            await supabase
+                .from('users')
+                .update({ equipped_title_id: noviceTitle.id })
+                .eq('id', user.id);
         }
 
         const { data: starterCards, error: starterCardsError } = await supabase
@@ -127,6 +137,7 @@ router.post('/register', async (req, res) => {
                 .insert(deckCards);
 
             if (deckCardsError) {
+                await supabase.from('users').delete().eq('id', user.id);
                 throw deckCardsError;
             }
 
@@ -150,24 +161,31 @@ router.post('/register', async (req, res) => {
                 .insert(collectionCards);
 
             if (collectionError) {
+                await supabase.from('users').delete().eq('id', user.id);
                 throw collectionError;
             }
         }
 
+        const token = jwt.sign(
+            { id: user.id, email: user.email, username: user.username },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+
         const userResponse = {
             id: user.id,
             email: user.email,
-            nickname: user.nickname,
+            username: user.username,
             perim_coins: user.perim_coins,
             perim_gems: user.perim_gems,
-            level: user.level,
-            experience: user.experience,
+            equipped_title: noviceTitle?.id ?? null,
             created_at: user.created_at
         };
 
         return res.status(201).json({
             success: true,
             data: {
+                token,
                 user: userResponse,
                 deck: {
                     id: userDeck.id,
@@ -186,24 +204,67 @@ router.post('/register', async (req, res) => {
     }
 });
 
-export default router;
+router.post('/login', async (req, res) => {
+    const rawIdentifier = req.body.username;
+    const password = req.body.password;
 
-/*{
-    "success": true,
-    "data": [
-        {
-            "email": "test@chaotic.com",
-            "nickname": "uuussaaa",
-            "perim_coins": 1000,
-            "perim_gems": 50,
-            "equipped_title_id": null,
-            "equipped_avatar_id": null,
-            "quest_points": 0,
-            "level": 1,
-            "experience": 0,
-            "created_at": "2026-02-19T23:31:14.730603+00:00",
-            "updated_at": "2026-02-19T23:31:14.730603+00:00",
-            "password_user": "senha123"
+    if (!rawIdentifier || !password) {
+        return res.status(400).json({ success: false, error: 'Identifier and password are required.' });
+    }
+
+    const identifier = String(rawIdentifier).trim().toLowerCase();
+
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select(`
+                id, email, username, password_hash,
+                avatar_url, character_model,
+                perim_coins, perim_gems,
+                elo, rank_name,
+                wins, losses,
+                win_rate, reputation_status,
+                equipped_title_id,
+                is_banned
+            `)
+            .eq("username", identifier)
+            .single();
+
+        if (error || !user) {
+            return res.status(401).json({ success: false, error: error });
         }
-    ]
-} */
+
+        if (user.is_banned) {
+            const permanent = !user.ban_expires_at;
+            const expired = user.ban_expires_at && new Date(user.ban_expires_at) < new Date();
+
+            if (!expired) {
+                return res.status(403).json({
+                    success: false,
+                    error: permanent ? 'Account is permanently banned.' : `Account is banned until ${user.ban_expires_at}.`
+                });
+            }
+        }
+
+        const passwordMatch = await bcrypt.compare(password, user.password_hash);
+        if (!passwordMatch) {
+            return res.status(401).json({ success: false, error: 'Invalid credentials.' });
+        }
+
+        const token = jwt.sign(
+            { id: user.id, email: user.email, username: user.username },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+
+        const { password_hash, ...userResponse } = user;
+
+        return res.json({ success: true, data: { token, user: userResponse } });
+
+    } catch (err) {
+        console.error('Login error:', err);
+        return res.status(500).json({ success: false, error: 'An error occurred during login.' });
+    }
+});
+
+export default router;

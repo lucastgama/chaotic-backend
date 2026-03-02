@@ -3,141 +3,58 @@ import { supabase } from '../config/supabase.js';
 
 const router = Router();
 
-//teste
+// GET /cards?limit=10&offset=0&type=creature
+router.get('/', async (req, res) => {
+    try {
+        const limit  = Math.min(parseInt(req.query.limit)  || 10, 100);
+        const offset = parseInt(req.query.offset) || 0;
+        const type   = req.query.type;
 
-router.get('/creatures', async (req, res) => {
+        let query = supabase
+            .from('cards_view')
+            .select('*')
+            .range(offset, offset + limit - 1);
+
+        if (type) {
+            query = query.eq('card_type', type);
+        }
+
+        const { data, error } = await query;
+
+        if (error) {
+            console.error('Error fetching cards:', error);
+            return res.status(500).json({ success: false, error: 'Failed to fetch cards.' });
+        }
+
+        return res.json({ success: true, total: data.length, data });
+    } catch (error) {
+        console.error('Error fetching cards:', error);
+        return res.status(500).json({ success: false, error: 'Failed to fetch cards.' });
+    }
+});
+
+router.get('/:code', async (req, res) => {
     try {
         const { data, error } = await supabase
-            .from('creatures')
-            .select('*');
+            .from('cards_view')
+            .select('*')
+            .eq('code', req.params.code)
+            .single();
 
         if (error) {
-            return res.status(400).json({
-                success: false,
-                error: error.message
-            });
+            if (error.code === 'PGRST116') {
+                return res.status(404).json({ success: false, error: 'Card not found.' });
+            }
+            console.error('Error fetching card:', error);
+            return res.status(500).json({ success: false, error: 'Failed to fetch card.' });
         }
 
-        return res.json({
-            success: true,
-            data: data
-        });
-    } catch (err) {
-        return res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
-router.get('/attacks', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('attacks')
-            .select('*');
-
-        if (error) {
-            return res.status(400).json({
-                success: false,
-                error: error.message
-            });
-        }
-
-        return res.json({
-            success: true,
-            data: data
-        });
-    } catch (err) {
-        return res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
-router.get('/battlegears', async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('battlegears').select('*');
-
-        if (error) {
-            return res.status(400).json({
-                success: false,
-                error: error.message
-            });
-        }
-        return res.json({
-            success: true,
-            data: data
-        });
+        return res.json({ success: true, data });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        console.error('Error fetching card:', error);
+        return res.status(500).json({ success: false, error: 'Failed to fetch card.' });
     }
 });
 
-router.get('/locations', async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('locations').select('*');
-        if (error) {
-            return res.status(400).json({
-                success: false,
-            });
-        }
-        return res.json({
-            success: true,
-            data: data
-        });
-    } catch (error) {
-        return res.status(500).json({
-            success: false, error: error.message
-        });
-    }
-});
 
-router.get('/mugic/:code', async (req, res) => {
-    const { code } = req.params;
-    if (!code) {
-        return res.status(400).json({
-            success: false, error: 'Código da mugic é obrigatório'
-        });
-    }
-
-    try {
-        const { data, error } = await supabase.from('mugics').select('*').eq('code', code);
-        if (error) {
-            return res.status(400).json({
-                success: false,
-            });
-        }
-        return res.json({
-            success: true,
-            data: data
-        });
-    } catch (error) {
-        return res.status(500).json({
-            success: false, error: error.message
-        });
-    }
-});
-
-router.get('/mugics', async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('mugics').select('*');
-        if (error) {
-            return res.status(400).json({
-                success: false,
-            });
-        }
-        return res.json({
-            success: true,
-            data: data
-        });
-    } catch (error) {
-        return res.status(500).json({
-            success: false, error: error.message
-        });
-    }
-});
 export default router;
