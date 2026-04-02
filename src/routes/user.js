@@ -7,7 +7,6 @@ import { authenticateToken } from "../middleware/auth.js";
 const router = Router();
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
 
 router.post('/register', async (req, res) => {
     const rawEmail = req.body.email;
@@ -32,9 +31,6 @@ router.post('/register', async (req, res) => {
 
     if (username.length < 3 || username.length > 30) {
         return res.status(400).json({ success: false, error: 'Username must be between 3 and 30 characters.' });
-    }
-    if (!USERNAME_REGEX.test(username)) {
-        return res.status(400).json({ success: false, error: 'Username may only contain letters, numbers and underscores.' });
     }
 
     if (password.length < 6 || password.length > 100) {
@@ -214,6 +210,10 @@ router.post('/login', async (req, res) => {
 
     const identifier = String(rawIdentifier).trim().toLowerCase();
 
+    if (!/^[a-z0-9_]+$/.test(identifier)) {
+        return res.status(400).json({ success: false, error: 'Invalid identifier.' });
+    }
+
     try {
         const { data: user, error } = await supabase
             .from('users')
@@ -227,11 +227,11 @@ router.post('/login', async (req, res) => {
                 equipped_title_id,
                 is_banned
             `)
-            .eq("username", identifier)
+            .ilike('username', identifier)
             .single();
 
         if (error || !user) {
-            return res.status(401).json({ success: false, error: error });
+            return res.status(401).json({ success: false, error: 'Invalid credentials.' });
         }
 
         if (user.is_banned) {
@@ -251,8 +251,31 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, error: 'Invalid credentials.' });
         }
 
+        await supabase
+            .from('sessions')
+            .update({ is_active: false })
+            .eq('user_id', user.id)
+            .eq('is_active', true);
+
+        const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() ?? req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'] ?? null;
+
+        const { data: session, error: sessionError } = await supabase
+            .from('sessions')
+            .insert({
+                user_id: user.id,
+                ip_address: ip,
+                user_agent: userAgent,
+            })
+            .select('id')
+            .single();
+
+        if (sessionError) {
+            throw sessionError;
+        }
+
         const token = jwt.sign(
-            { id: user.id, email: user.email, username: user.username },
+            { id: user.id, email: user.email, username: user.username, sessionId: session.id },
             process.env.JWT_SECRET,
             { expiresIn: '7d' }
         );
@@ -264,6 +287,24 @@ router.post('/login', async (req, res) => {
     } catch (err) {
         console.error('Login error:', err);
         return res.status(500).json({ success: false, error: 'An error occurred during login.' });
+    }
+});
+
+router.post('/logout', authenticateToken, async (req, res) => {
+    const sessionId = req.user.sessionId;
+    const userId = req.user.id;
+
+    try {
+        await supabase
+            .from('sessions')
+            .update({ is_active: false })
+            .eq('id', sessionId)
+            .eq('user_id', userId);
+
+        return res.json({ success: true, data: { message: 'Logged out successfully.' } });
+    } catch (err) {
+        console.error('Logout error:', err);
+        return res.status(500).json({ success: false, error: 'An error occurred during logout.' });
     }
 });
 

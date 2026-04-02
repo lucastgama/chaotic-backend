@@ -5,12 +5,10 @@ import routes from './src/routes/index.js';
 
 const app = express();
 
-// Middlewares
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Rotas
 app.use('/api', routes);
 
 app.listen(process.env.PORT, () => {

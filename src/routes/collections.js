@@ -4,12 +4,12 @@ import { authenticateToken } from "../middleware/auth.js";
 
 const router = Router();
 
-// GET /user/collection?type=creature&limit=20&offset=0
 router.get('/collection', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const limit  = Math.min(parseInt(req.query.limit)  || 100, 100);
+    const limit = Math.min(parseInt(req.query.limit) || 100, 100);
     const offset = parseInt(req.query.offset) || 0;
-    const type   = req.query.type;
+    const type = req.query.type;
+    const name = req.query.name;
 
     try {
         let query = supabase
@@ -17,17 +17,19 @@ router.get('/collection', authenticateToken, async (req, res) => {
             .select(`
                 quantity,
                 cards_view (
-                    card_id, card_type, code, name, image_url,
-                    creature_tribe, build_points, mugic_cost,
-                    location_initiative, rarity_id
+                    code
                 )
             `)
             .eq('user_id', userId)
             .range(offset, offset + limit - 1)
             .order('name', { referencedTable: 'cards_view', ascending: true });
 
-        if (type) {
+        if (type && type !== 'all') {
             query = query.eq('cards_view.card_type', type);
+        }
+
+        if (name) {
+            query = query.ilike('cards_view.name', `%${name}%`);
         }
 
         const { data, error } = await query;
